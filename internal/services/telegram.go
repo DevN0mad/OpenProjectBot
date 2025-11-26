@@ -54,7 +54,7 @@ func NewTelegramBot(opts TelegramOpts, logger *slog.Logger) (*TelegramBotService
 	}, nil
 }
 
-// SendFile отправляет файл по переданрому пути в telegram чат.
+// SendFile отправляет файл по переданному пути в telegram чат.
 func (s *TelegramBotService) SendFile(ctx context.Context, path string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()

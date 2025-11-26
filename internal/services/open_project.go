@@ -4,11 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/xuri/excelize/v2"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/xuri/excelize/v2"
 )
 
 // OpenProjectService основной сервис для работы с OpenProject
