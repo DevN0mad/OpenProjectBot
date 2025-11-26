@@ -1,0 +1,8 @@
+telegram_bot:
+  token: "8325441016:AAE8sVINZ-4s_xhjbaYZ81HGRNNqed7AdvI"
+  message: "Отчет по задачам OpenProject во вложении."
+  db_path: "/var/lib/openprojectbot/bot.db"
+
+daily_job:
+  hour: 17
+  minute: 0

@@ -9,15 +9,13 @@ import (
 
 // DailyJobOpts параметры необходимые для работы сервиса.
 type DailyJobOpts struct {
-	FilePath string `yaml:"file_path" validate:"required"`
-	Hour     int    `yaml:"hour" validate:"required,min=0,max=23"`
-	Minute   int    `yaml:"minute" validate:"required,min=0,max=59"`
+	Hour   int `yaml:"hour" validate:"required,min=0,max=23"`
+	Minute int `yaml:"minute" validate:"required,min=0,max=59"`
 }
 
 // DailyJobService отправляет файл каждый день в заданное время.
 type DailyJobService struct {
 	botServ  *TelegramBotService
-	filePath string
 	hour     int
 	minute   int
 	timezone *time.Location
@@ -40,19 +38,13 @@ func NewDailyJobService(
 		return nil, fmt.Errorf("bot service is required")
 	}
 
-	if opts.FilePath == "" {
-		return nil, fmt.Errorf("file path is required")
-	}
-
 	logger.Info("Daily job configured",
 		"hour", opts.Hour,
 		"minute", opts.Minute,
-		"timezone", time.Local.String(),
-		"file", opts.FilePath)
+		"timezone", time.Local.String())
 
 	return &DailyJobService{
 		botServ:  botServ,
-		filePath: opts.FilePath,
 		hour:     opts.Hour,
 		minute:   opts.Minute,
 		timezone: time.Local,
@@ -74,7 +66,8 @@ func (d *DailyJobService) Start(ctx context.Context) {
 			return
 		case <-timer.C:
 			// TODO вызов сервиса по созданию отчета и получение пути к файлу
-			if err := d.botServ.SendFile(ctx, d.filePath); err != nil {
+			var filePath string
+			if err := d.botServ.SendFile(ctx, filePath); err != nil {
 				d.logger.Error("Daily report sending failed", "error", err)
 			} else {
 				d.logger.Info("Daily report sent successfully")

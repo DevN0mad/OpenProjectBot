@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/DevN0mad/OpenProjectBot/internal/core"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/DevN0mad/OpenProjectBot/internal/core"
 
 	"github.com/DevN0mad/OpenProjectBot/internal/config"
 )
@@ -26,7 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	a := core.NewApp(logger)
+	a := core.NewApp(nil, logger)
 
 	if err := a.ApplyConfig(cfgMgr.Current()); err != nil {
 		logger.Error("Failed to apply initial config", "error", err)
