@@ -7,16 +7,18 @@ import (
 	"github.com/xuri/excelize/v2"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // OpenProjectService основной сервис для работы с OpenProject
 type OpenProjectService struct {
-	baseURL   string
-	apiToken  string
-	projectID string
-	client    *http.Client
+	baseURL     string   `yaml:"baseURL" validate:"required"`
+	apiToken    string   `yaml:"apiToken" validate:"required"`
+	projectIDs  []string `yaml:"projectIDs" validate:"required"`
+	assigneeIDs []string `yaml:"assigneeIDs" validate:"required"`
+	client      *http.Client
 }
 
 // WorkPackage представляет задачу в OpenProject
@@ -26,24 +28,27 @@ type WorkPackage struct {
 	Links   struct {
 		Type struct {
 			Title string `json:"title"`
+			Href  string `json:"href"` // Добавляем href для получения ID
 		} `json:"type"`
 		Status struct {
 			Title string `json:"title"`
 		} `json:"status"`
 		Assignee struct {
 			Title string `json:"title"`
+			Href  string `json:"href"` // Добавляем href
 		} `json:"assignee"`
 		Responsible struct {
 			Title string `json:"title"`
 		} `json:"responsible"`
 		Project struct {
 			Title string `json:"title"`
+			Href  string `json:"href"` // Добавляем href
 		} `json:"project"`
 	} `json:"_links"`
-	StartDate *string `json:"startDate"` // Изменено на string
-	DueDate   *string `json:"dueDate"`   // Изменено на string
-	CreatedAt string  `json:"createdAt"` // Изменено на string
-	UpdatedAt string  `json:"updatedAt"` // Изменено на string
+	StartDate *string `json:"startDate"`
+	DueDate   *string `json:"dueDate"`
+	CreatedAt string  `json:"createdAt"`
+	UpdatedAt string  `json:"updatedAt"`
 }
 
 // WorkPackageResponse представляет ответ API с задачами
@@ -63,20 +68,67 @@ type EmployeeStats struct {
 }
 
 // Init инициализирует сервис с API токеном
-func Init(baseURL, apiToken, projectID string) *OpenProjectService {
+func Init(baseURL, apiToken string, projectIDs, assigneeIDs []string) *OpenProjectService {
 	return &OpenProjectService{
-		baseURL:   baseURL,
-		apiToken:  apiToken,
-		projectID: projectID,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		baseURL:     baseURL,
+		apiToken:    apiToken,
+		projectIDs:  projectIDs,
+		assigneeIDs: assigneeIDs,
+		client:      &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // GetWorkPackages получает все задачи проекта через Basic Auth
 func (s *OpenProjectService) GetWorkPackages() ([]WorkPackage, error) {
-	url := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.baseURL, s.projectID)
+	var allWorkPackages []WorkPackage
 
-	req, err := http.NewRequest("GET", url, nil)
+	for _, projectID := range s.projectIDs {
+		workPackages, err := s.getWorkPackagesForProject(projectID)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка получения задач для проекта %s: %w", projectID, err)
+		}
+
+		allWorkPackages = append(allWorkPackages, workPackages...)
+	}
+
+	return allWorkPackages, nil
+}
+
+// getWorkPackagesForProject получает все задачи для конкретного проекта
+func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]WorkPackage, error) {
+	// Рассчитываем временной диапазон: с 17:00 прошлого дня до 17:00 текущего дня
+	location, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		location = time.Local
+	}
+	now := time.Now().In(location)
+
+	// Сегодня в 17:00 (время работы бота)
+	today17 := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, location)
+
+	// Вчера в 17:00
+	yesterday := now.AddDate(0, 0, -1)
+	yesterday17 := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 17, 0, 0, 0, location)
+
+	// Форматируем даты в формат для OP
+	startDate := yesterday17.Format("2006-01-02T15:04:05Z")
+	endDate := today17.Format("2006-01-02T15:04:05Z")
+
+	baseURL := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.baseURL, projectID)
+
+	// Только фильтр по дате
+	filters := fmt.Sprintf(
+		`[{"updatedAt":{"operator":"<>d","values":["%s","%s"]}}]`,
+		startDate, endDate,
+	)
+
+	params := url.Values{}
+	params.Add("filters", filters)
+	fullURL := baseURL + "?" + params.Encode()
+
+	fmt.Printf("URL запроса: %s\n", fullURL)
+
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
 	}
@@ -86,6 +138,11 @@ func (s *OpenProjectService) GetWorkPackages() ([]WorkPackage, error) {
 	basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 	req.Header.Set("Authorization", basicAuth)
 	req.Header.Set("Content-Type", "application/json")
+
+	// Логируем период для отладки
+	fmt.Printf("Запрос задач за период: %s - %s\n",
+		yesterday17.Format("2006-01-02 15:04"),
+		today17.Format("2006-01-02 15:04"))
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -108,7 +165,42 @@ func (s *OpenProjectService) GetWorkPackages() ([]WorkPackage, error) {
 		return nil, fmt.Errorf("ошибка парсинга JSON: %w", err)
 	}
 
-	return result.Embedded.Elements, nil
+	// Фильтруем по исполнителю на стороне Go
+	filteredPackages := s.filterByAssignees(result.Embedded.Elements, s.assigneeIDs)
+
+	fmt.Printf("Получено задач: %d (после фильтрации: %d)\n",
+		len(result.Embedded.Elements), len(filteredPackages))
+
+	return filteredPackages, nil
+}
+
+// filterByAssignees фильтрует исполнителей по assigneeIDs
+func (s *OpenProjectService) filterByAssignees(workPackages []WorkPackage, assigneeIDs []string) []WorkPackage {
+	assigneeMap := make(map[string]bool)
+	for _, id := range assigneeIDs {
+		assigneeMap[id] = true
+	}
+
+	var filtered []WorkPackage
+	for _, wp := range workPackages {
+		if wp.Links.Assignee.Href != "" {
+			// Извлекаем ID из href (например: "/api/v3/users/20")
+			id := extractIDFromHref(wp.Links.Assignee.Href)
+			if id != "" && assigneeMap[id] {
+				filtered = append(filtered, wp)
+			}
+		}
+	}
+	return filtered
+}
+
+// extractIDFromHref извлекает из пути (href) идентификатор
+func extractIDFromHref(href string) string {
+	parts := strings.Split(href, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
 
 // GenerateExcelReport создает Excel файл с двумя листами
@@ -119,8 +211,23 @@ func (s *OpenProjectService) GenerateExcelReport(filePath string) error {
 		return fmt.Errorf("ошибка получения задач: %w", err)
 	}
 
+	// Красиво форматируем JSON
+	//jsonData, err := json.MarshalIndent(workPackages, "", "  ")
+	//if err != nil {
+	//	return fmt.Errorf("ошибка форматирования JSON: %w", err)
+	//}
+
+	//fmt.Printf("WORK PACKAGES (%d):\n%s\n", len(workPackages), string(jsonData))
+
 	// Фильтруем только ошибки
 	errorTasks := s.filterErrorTasks(workPackages)
+
+	jsonErrorTasks, err := json.MarshalIndent(errorTasks, "", "  ")
+	if err != nil {
+		return fmt.Errorf("ошибка форматирования JSON: %w", err)
+	}
+
+	fmt.Printf("ERROR TASKS (%d):\n%s\n", len(errorTasks), string(jsonErrorTasks))
 
 	// Собираем статистику по сотрудникам
 	employeeStats := s.calculateEmployeeStats(workPackages)
