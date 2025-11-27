@@ -364,7 +364,7 @@ func (s *OpenProjectService) createExcelFile(errorTasks []models.WorkPackage, em
 	f.SetActiveSheet(employeeSheetIndex)
 
 	// Создаем имя файла с timestamp
-	timestamp := time.Now().Format("2006-01-02")
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	fileName := fmt.Sprintf("5921_%s.xlsx", timestamp)
 	filePath := filepath.Join(s.opts.SaveDir, fileName)
 
