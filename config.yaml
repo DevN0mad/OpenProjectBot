@@ -6,3 +6,35 @@ telegram_bot:
 daily_job:
   hour: 17
   minute: 0
+
+http_server:
+  address: "0.0.0.0:8080"
+  read_timeout_seconds: 10
+  write_timeout_seconds: 10
+  idle_timeout_seconds: 60
+
+open_project:
+  baseURL: "http://192.168.101.21"
+  apiToken: "8fffc4ea73a79304ca3ede354f9828b066a5dc46fa804c9912c0f4ba26575a70"
+  projectIDs:
+    - "16"
+    - "19"
+    - "5"
+  assigneeIDs:
+    - "20"
+    - "8"
+    - "5"
+    - "9"
+    - "12"
+    - "14"
+    - "27"
+    - "15"
+    - "29"
+    - "25"
+    - "11"
+    - "13"
+    - "10"
+    - "16"
+    - "17"
+    - "28"
+  saveDir: "/var/lib/openprojectbot/reports"

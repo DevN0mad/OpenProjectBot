@@ -9,8 +9,8 @@ import (
 
 // DailyJobOpts параметры необходимые для работы сервиса.
 type DailyJobOpts struct {
-	Hour   int `yaml:"hour" validate:"required,min=0,max=23"`
-	Minute int `yaml:"minute" validate:"required,min=0,max=59"`
+	Hour   int `mapstructure:"hour" validate:"required,min=0,max=23"`
+	Minute int `mapstructure:"minute" validate:"required,min=0,max=59"`
 }
 
 // DailyJobService отправляет файл каждый день в заданное время.
@@ -70,9 +70,11 @@ func (d *DailyJobService) Start(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			path, err := d.projSrv.GenerateExcelReport()
-			if err != nil
-			var filePath string
+			filePath, err := d.projSrv.GenerateExcelReport()
+			if err != nil {
+				d.logger.Error("Generate report", "error", err)
+				continue
+			}
 			if err := d.botServ.SendFile(ctx, filePath); err != nil {
 				d.logger.Error("Daily report sending failed", "error", err)
 			} else {

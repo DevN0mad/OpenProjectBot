@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/go-playground/validator/v10"
 	"github.com/spf13/viper"
 
 	"github.com/DevN0mad/OpenProjectBot/internal/server"
@@ -14,10 +15,10 @@ import (
 
 // Config представляет конфигурацию приложения.
 type Config struct {
-	TelegramBot services.TelegramOpts    `yaml:"telegram_bot" mapstructure:"telegram_bot"`
-	DailyJob    services.DailyJobOpts    `yaml:"daily_job"    mapstructure:"daily_job"`
-	OpenProject services.OpenProjectOpts `yaml:"open_project" mapstructure:"open_project"`
-	HttpServer  server.AdminServerOpts   `yaml:"http_server"  mapstructure:"http_server"`
+	TelegramBot services.TelegramOpts    `mapstructure:"telegram_bot"`
+	DailyJob    services.DailyJobOpts    `mapstructure:"daily_job"`
+	OpenProject services.OpenProjectOpts `mapstructure:"open_project"`
+	HttpServer  server.AdminServerOpts   `mapstructure:"http_server"`
 }
 
 // Manager управляет конфигурацией приложения, обеспечивая загрузку,
@@ -27,6 +28,7 @@ type Manager struct {
 	logger      *slog.Logger
 	v           *viper.Viper
 	subscribers []func(Config)
+	validate    *validator.Validate
 }
 
 // NewManager создает новый менеджер конфигурации, загружая конфигурацию из указанного пути.
@@ -49,9 +51,15 @@ func NewManager(path string, logger *slog.Logger) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:    &cfg,
-		logger: logger,
-		v:      v,
+		cfg:      &cfg,
+		logger:   logger,
+		v:        v,
+		validate: validator.New(),
+	}
+	err := m.validate.Struct(&cfg)
+	if err != nil {
+		logger.Error("Validate config", "error", err)
+		return nil, fmt.Errorf("validate config: %w", err)
 	}
 
 	logger.Info("Config loaded", "path", path)
@@ -63,6 +71,11 @@ func NewManager(path string, logger *slog.Logger) (*Manager, error) {
 		var newCfg Config
 		if err := v.Unmarshal(&newCfg); err != nil {
 			logger.Error("Failed to reload config", "error", err)
+			return
+		}
+
+		if err := m.validate.Struct(&newCfg); err != nil {
+			logger.Error("Validate reloaded config", "error", err)
 			return
 		}
 

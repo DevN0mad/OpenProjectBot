@@ -13,9 +13,9 @@ import (
 
 // TelegramOpts — параметры инициализации TelegramBotService.
 type TelegramOpts struct {
-	Token   string `yaml:"token"   validate:"required"`
-	Message string `yaml:"message" validate:"required"`
-	DbPath  string `yaml:"db_path" validate:"required"`
+	Token   string `mapstructure:"token"   validate:"required"`
+	Message string `mapstructure:"message" validate:"required"`
+	DbPath  string `mapstructure:"db_path" validate:"required"`
 }
 
 // TelegramBotService — сервис взаимодействия с Telegram.

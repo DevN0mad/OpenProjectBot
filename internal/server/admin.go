@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,10 +16,10 @@ const APIv1Prefix = "/api/v1/"
 
 // AdminServerOpts параметры для настройки административного сервера.
 type AdminServerOpts struct {
-	Address             string `yaml:"address" validate:"required"`
-	ReadTimeoutSeconds  int    `yaml:"read_timeout_seconds" validate:"min=0"`
-	WriteTimeoutSeconds int    `yaml:"write_timeout_seconds" validate:"min=0"`
-	IdleTimeoutSeconds  int    `yaml:"idle_timeout_seconds" validate:"min=0"`
+	Address             string `mapstructure:"address" validate:"required"`
+	ReadTimeoutSeconds  int    `mapstructure:"read_timeout_seconds" validate:"min=0"`
+	WriteTimeoutSeconds int    `mapstructure:"write_timeout_seconds" validate:"min=0"`
+	IdleTimeoutSeconds  int    `mapstructure:"idle_timeout_seconds" validate:"min=0"`
 }
 
 // AdminHandler обрабатывает административные команды.
@@ -46,21 +48,24 @@ func (h *AdminServer) Register(mux *http.ServeMux) {
 // handleReport обрабатывает запросы на получение отчёта.
 func (h *AdminServer) handleReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		h.logger.Warn("Method not allowed", "method", r.Method)
+		h.logger.Warn("method_not_allowed", "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	report, err := h.opSrv.GenerateExcelReport()
+	reportPath, err := h.opSrv.GenerateExcelReport()
 	if err != nil {
-		h.logger.Error("Generate report", "error", err)
+		h.logger.Error("generate_report", "err", err)
 		http.Error(w, "Failed to generate report", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(report))
+	filename := filepath.Base(reportPath)
 
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+	http.ServeFile(w, r, reportPath)
 }
 
 // Start запускает административный сервер.

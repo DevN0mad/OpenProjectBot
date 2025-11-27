@@ -19,11 +19,11 @@ import (
 // OpenProjectService основной сервис для работы с OpenProject
 
 type OpenProjectOpts struct {
-	BaseURL     string   `yaml:"baseURL" validate:"required"`
-	ApiToken    string   `yaml:"apiToken" validate:"required"`
-	ProjectIDs  []string `yaml:"projectIDs" validate:"required"`
-	AssigneeIDs []string `yaml:"assigneeIDs" validate:"required"`
-	SaveDir     string   `yaml:"saveDir" validate:"required"`
+	BaseURL     string   `mapstructure:"baseURL" validate:"required"`
+	ApiToken    string   `mapstructure:"apiToken" validate:"required"`
+	ProjectIDs  []string `mapstructure:"projectIDs" validate:"required"`
+	AssigneeIDs []string `mapstructure:"assigneeIDs" validate:"required"`
+	SaveDir     string   `mapstructure:"saveDir" validate:"required"`
 }
 
 type OpenProjectService struct {
