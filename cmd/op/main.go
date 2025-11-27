@@ -33,11 +33,12 @@ func main() {
 	logger.Info("Testing Basic Auth with API token")
 
 	// Генерируем Excel отчет
-	_, err := opService.GenerateExcelReport()
+	resPath, err := opService.GenerateExcelReport()
 	if err != nil {
 		logger.Error("Failed to generate report", "error", err)
 		return
 	}
 
+	logger.Info("Result path to file", "path", resPath)
 	logger.Info("✅ Excel report successfully created", "file", "text_report.xlsx")
 }

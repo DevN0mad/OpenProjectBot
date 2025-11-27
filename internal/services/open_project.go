@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -189,7 +191,7 @@ func (s *OpenProjectService) GenerateExcelReport() (string, error) {
 	s.logger.Info("Creating Excel file", "total_tasks", len(workPackages), "error_tasks", len(errorTasks), "employees", len(employeeStats))
 
 	// Создаем Excel файл
-	return s.createExcelFile(s.opts.SaveDir, errorTasks, employeeStats)
+	return s.createExcelFile(errorTasks, employeeStats)
 }
 
 // filterErrorTasks фильтрует только задачи типа "Ошибка"
@@ -280,7 +282,7 @@ func (s *OpenProjectService) containsStatus(status string, statusList []string) 
 }
 
 // createExcelFile создает Excel файл с двумя листами
-func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) (string, error) {
+func (s *OpenProjectService) createExcelFile(errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) (string, error) {
 	f := excelize.NewFile()
 
 	// Удаляем дефолтный лист
@@ -361,9 +363,26 @@ func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []model
 	// Устанавливаем активным лист "ФИО"
 	f.SetActiveSheet(employeeSheetIndex)
 
-	s.logger.Info("Saving Excel file", "path", filePath)
+	// Создаем имя файла с timestamp
+	timestamp := time.Now().Format("2006-01-02")
+	fileName := fmt.Sprintf("5921_%s.xlsx", timestamp)
+	filePath := filepath.Join(s.opts.SaveDir, fileName)
+
+	if err := os.MkdirAll(s.opts.SaveDir, 0755); err != nil {
+		return "", fmt.Errorf("error to make directory: %w", err)
+	}
+
 	// Сохраняем файл
-	return "", f.SaveAs("test_report.xlsx")
+	if err := f.SaveAs(filePath); err != nil {
+		return "", fmt.Errorf("error to save file: %w", err)
+	}
+
+	s.logger.Info("Excel report created successfully",
+		"file_path", filePath,
+		"error_tasks", len(errorTasks),
+		"employee_stats", len(employeeStats))
+	// Сохраняем файл
+	return filePath, nil
 }
 
 // parseDate парсит строку даты в формате "2006-01-02"
