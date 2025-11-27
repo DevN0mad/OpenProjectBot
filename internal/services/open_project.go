@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DevN0mad/OpenProjectBot/internal/models"
@@ -46,186 +47,104 @@ func Init(opts OpenProjectOpts, logger *slog.Logger) *OpenProjectService {
 	}
 }
 
-func (s *OpenProjectService) GetWorkPackages() ([]models.WorkPackage, error) {
+func (s *OpenProjectService) GetWorkPackagesByUsers() ([]models.WorkPackage, error) {
 	var allWorkPackages []models.WorkPackage
+	var mu sync.Mutex
 
+	s.logger.Info("Starting parallel tasks export with limit",
+		"projects_count", len(s.opts.ProjectIDs),
+		"users_count", len(s.opts.AssigneeIDs))
+
+	// Ограничиваем количество одновременных запросов
+	semaphore := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+
+	s.logger.Info("🔍 Получение задач по пользователям\n")
+
+	// Для каждого проекта и пользователя
 	for _, projectID := range s.opts.ProjectIDs {
-		workPackages, err := s.getWorkPackagesForProject(projectID)
-		if err != nil {
-			return nil, err
+		s.logger.Info("--- Проект ---", "project_id", projectID)
+
+		for _, assigneeID := range s.opts.AssigneeIDs {
+			wg.Add(1)
+
+			go func(pid, uid string) {
+				defer wg.Done()
+
+				// Захват слота
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				userTasks, err := s.getWorkPackagesForUser(pid, uid)
+				if err != nil {
+					s.logger.Error("❌ Failed to get tasks for user",
+						"project_id", projectID,
+						"user_id", uid,
+						"err", err)
+					return
+				}
+
+				// Безопасно добавляем задачи
+				mu.Lock()
+				allWorkPackages = append(allWorkPackages, userTasks...)
+				mu.Unlock()
+
+				if len(userTasks) > 0 {
+					s.logger.Debug("User tasks found",
+						"project_id", projectID,
+						"user_id", uid,
+						"count", len(userTasks))
+				}
+			}(projectID, assigneeID)
 		}
-		allWorkPackages = append(allWorkPackages, workPackages...)
 	}
 
-	// 🔍 ДЕБАГ ИНФОРМАЦИЯ
-	fmt.Printf("\n=== ДЕБАГ ИНФОРМАЦИЯ ===\n")
-	fmt.Printf("Всего задач после фильтрации: %d\n", len(allWorkPackages))
-
-	// Анализ по статусам
-	statusMap := make(map[string]int)
-	for _, wp := range allWorkPackages {
-		statusID := extractIDFromHref(wp.Links.Status.Href)
-		statusMap[fmt.Sprintf("%s (id:%s)", wp.Links.Status.Title, statusID)]++
-	}
-	fmt.Printf("Статусы: %v\n", statusMap)
-
-	// Анализ по исполнителям
-	assigneeMap := make(map[string]int)
-	for _, wp := range allWorkPackages {
-		assigneeMap[wp.Links.Assignee.Title]++
-	}
-	fmt.Printf("Исполнители: %v\n", assigneeMap)
-
-	fmt.Printf("=======================\n\n")
-
+	wg.Wait()
+	s.logger.Info("All tasks collected", "total_tasks", len(allWorkPackages))
 	return allWorkPackages, nil
 }
 
-//// GetWorkPackages получает все задачи проекта через Basic Auth
-//func (s *OpenProjectService) GetWorkPackages() ([]models.WorkPackage, error) {
-//	var allWorkPackages []models.WorkPackage
-//
-//	s.logger.Info("Starting tasks export", "projects_count", len(s.opts.ProjectIDs))
-//
-//	for i, projectID := range s.opts.ProjectIDs {
-//		s.logger.Info("Processing project", "current", i+1, "total", len(s.opts.ProjectIDs), "project_id", projectID)
-//
-//		workPackages, err := s.getWorkPackagesForProject(projectID)
-//		if err != nil {
-//			s.logger.Error("❌ Failed to get tasks for project", "project_id", projectID, "error", err)
-//			return nil, fmt.Errorf("ошибка получения задач для проекта %s: %w", projectID, err)
-//		}
-//
-//		allWorkPackages = append(allWorkPackages, workPackages...)
-//		s.logger.Info("✅ Project tasks added", "project_id", projectID, "added", len(workPackages), "total", len(allWorkPackages))
-//	}
-//
-//	s.logger.Info("✅ Total active tasks found", "count", len(allWorkPackages))
-//
-//	if len(allWorkPackages) > 0 {
-//		jsonData, err := json.MarshalIndent(allWorkPackages, "", "  ")
-//		if err != nil {
-//			fmt.Printf("❌ Ошибка форматирования JSON: %v\n", err)
-//		} else {
-//			fmt.Printf("📋 ДЕТАЛИ ЗАДАЧ:\n%s\n", string(jsonData))
-//		}
-//	}
-//
-//	return allWorkPackages, nil
-//}
+func (s *OpenProjectService) getWorkPackagesForUser(projectID, assigneeID string) ([]models.WorkPackage, error) {
+	baseURL := fmt.Sprintf("%s/api/v3/work_packages", s.opts.BaseURL)
 
-// getWorkPackagesForProject получает все задачи для конкретного проекта
-func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]models.WorkPackage, error) {
-	var allWorkPackages []models.WorkPackage
-	page := 1
-	pageSize := 100
+	filters := fmt.Sprintf(`[
+        {"status": {"operator": "!", "values": ["12", "10", "14", "8"]}},
+        {"project": {"operator": "=", "values": ["%s"]}},
+        {"assignee": {"operator": "=", "values": ["%s"]}}
+    ]`, projectID, assigneeID)
 
-	s.logger.Debug("Starting pagination for project", "project_id", projectID)
+	params := url.Values{}
+	params.Add("filters", filters)
+	params.Add("pageSize", "100")
 
-	for {
-		s.logger.Debug("Fetching page", "page", page)
+	fullURL := baseURL + "?" + params.Encode()
 
-		baseURL := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.opts.BaseURL, projectID)
-
-		// Фильтр: статус НЕ равен 12 (не закрыто)
-		filters := `[{"status":{"operator": "!","values":["8", "10", "12", "14"]}}]`
-
-		params := url.Values{}
-		params.Add("filters", filters)
-		params.Add("pageSize", fmt.Sprintf("%d", pageSize))
-		params.Add("offset", fmt.Sprintf("%d", (page-1)*pageSize))
-
-		fullURL := baseURL + "?" + params.Encode()
-
-		workPackages, total, err := s.fetchWorkPackagesPage(fullURL)
-		if err != nil {
-			return nil, err
-		}
-
-		s.logger.Debug("Page tasks received", "page", page, "tasks_on_page", len(workPackages), "total_in_project", total)
-
-		allWorkPackages = append(allWorkPackages, workPackages...)
-
-		// Проверяем, есть ли еще страницы
-		if len(allWorkPackages) >= total {
-			s.logger.Debug("Pagination completed for project", "project_id", projectID)
-			break
-		}
-
-		// Защита от бесконечного цикла
-		if page > 100 {
-			s.logger.Warn("Pagination interrupted - too many pages", "max_pages", 100)
-			break
-		}
-
-		page++
-	}
-
-	// Фильтруем по исполнителю на стороне Go
-	filteredPackages := s.filterByAssignees(allWorkPackages, s.opts.AssigneeIDs)
-
-	s.logger.Info("Project tasks processed", "project_id", projectID, "received", len(allWorkPackages), "after_filtering", len(filteredPackages))
-
-	return filteredPackages, nil
-}
-
-// fetchWorkPackagesPage получает одну страницу задач
-func (s *OpenProjectService) fetchWorkPackagesPage(url string) ([]models.WorkPackage, int, error) {
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("ошибка создания запроса: %w", err)
+		return nil, err
 	}
 
 	auth := "apikey:" + s.opts.ApiToken
 	basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 	req.Header.Set("Authorization", basicAuth)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("ошибка выполнения запр: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, 0, fmt.Errorf("ошибка API %d: %s", resp.StatusCode, string(body))
-	}
-
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("ошибка чтения ответа: %w", err)
+		return nil, err
 	}
 
 	var result models.WorkPackageResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, 0, fmt.Errorf("ошибка парсинга JSON: %w", err)
+		return nil, err
 	}
 
-	// Получаем общее количество из заголовков
-	total := result.Total
-
-	return result.Embedded.Elements, total, nil
-}
-
-// filterByAssignees фильтрует исполнителей по assigneeIDs
-func (s *OpenProjectService) filterByAssignees(workPackages []models.WorkPackage, assigneeIDs []string) []models.WorkPackage {
-	assigneeMap := make(map[string]bool)
-	for _, id := range assigneeIDs {
-		assigneeMap[id] = true
-	}
-
-	var filtered []models.WorkPackage
-	for _, wp := range workPackages {
-		if wp.Links.Assignee.Href != "" {
-			// Извлекаем ID из href (например: "/api/v3/users/20")
-			id := extractIDFromHref(wp.Links.Assignee.Href)
-			if id != "" && assigneeMap[id] {
-				filtered = append(filtered, wp)
-			}
-		}
-	}
-	return filtered
+	return result.Embedded.Elements, nil
 }
 
 // extractIDFromHref извлекает из пути (href) идентификатор
@@ -239,29 +158,30 @@ func extractIDFromHref(href string) string {
 
 // GenerateExcelReport создает Excel файл с двумя листами
 func (s *OpenProjectService) GenerateExcelReport() (string, error) {
-	// Получаем задачи
-	workPackages, err := s.GetWorkPackages()
+	// Получаем задачи по всем пользователям
+	workPackages, err := s.GetWorkPackagesByUsers()
 	if err != nil {
 		return "", fmt.Errorf("ошибка получения задач: %w", err)
 	}
 
-	// Красиво форматируем JSON
-	//jsonData, err := json.MarshalIndent(workPackages, "", "  ")
-	//if err != nil {
-	//	return fmt.Errorf("ошибка форматирования JSON: %w", err)
-	//}
+	// Проверим, есть ли задача 4600 (ДЛЯ ТЕСТА)
+	found := false
+	for _, wp := range workPackages {
+		if wp.ID == 4600 {
+			fmt.Printf("✅ ЗАДАЧА 4600 ТЕПЕРЬ В ВЫГРУЗКЕ! Статус: %s\n", wp.Links.Status.Title)
+			found = true
+			break
+		}
+	}
 
-	//fmt.Printf("WORK PACKAGES (%d):\n%s\n", len(workPackages), string(jsonData))
+	if !found {
+		fmt.Printf("❌ ЗАДАЧА 4600 ВСЕ ЕЩЕ НЕ В ВЫГРУЗКЕ\n")
+	}
+
+	s.logger.Info("Общее количество задач в выгрузке: ", "count", len(workPackages))
 
 	// Фильтруем только ошибки
 	errorTasks := s.filterErrorTasks(workPackages)
-	//
-	//jsonErrorTasks, err := json.MarshalIndent(errorTasks, "", "  ")
-	//if err != nil {
-	//	return fmt.Errorf("ошибка форматирования JSON: %w", err)
-	//}
-	//
-	//fmt.Printf("ERROR TASKS (%d):\n%s\n", len(errorTasks), string(jsonErrorTasks))
 
 	// Собираем статистику по сотрудникам
 	employeeStats := s.calculateEmployeeStats(workPackages)
@@ -276,9 +196,17 @@ func (s *OpenProjectService) GenerateExcelReport() (string, error) {
 func (s *OpenProjectService) filterErrorTasks(tasks []models.WorkPackage) []models.WorkPackage {
 	var errorTasks []models.WorkPackage
 	for _, task := range tasks {
-		if task.Links.Type.Title == "Ошибка" {
-			errorTasks = append(errorTasks, task)
+		if task.ID == 4600 {
+			s.logger.Info("Filtered task with ID 4600", "task", task)
 		}
+		taskType := extractIDFromHref(task.Links.Type.Href)
+		if taskType == "7" {
+			errorTasks = append(errorTasks, task)
+
+		}
+		//if task.Links.Type.Title == "Ошибка" {
+		//	errorTasks = append(errorTasks, task)
+		//}
 	}
 	return errorTasks
 }

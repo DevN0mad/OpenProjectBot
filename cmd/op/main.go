@@ -12,8 +12,10 @@ func main() {
 	// Список ids проектов 16 - android, 19 - СВОД, 5 - Сервер репей
 	projectIDs := []string{"16", "19", "5"}
 
-	// Список ids исполнителей
-	assigneeIDs := []string{"20", "8", "5", "9", "12", "14", "27", "15", "29", "25", "11", "13", "10", "16", "17", "28"}
+	// Список ids исполнителей (не все люди)
+	assigneeIDs := []string{"5", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "20", "25", "27", "28", "29"}
+	//// Список ids исполнителей (все люди из 5921)
+	//assigneeIDs := []string{"15", "23", "22", "100", "21", "26", "24", "5", "12", "14", "8", "9", "20", "27", "18", "11", "10", "13", "28", "17", "16", "25", "29"}
 
 	opts := services.OpenProjectOpts{
 		BaseURL:  "http://192.168.101.21",
@@ -31,7 +33,7 @@ func main() {
 	logger.Info("Testing Basic Auth with API token")
 
 	// Генерируем Excel отчет
-	err := opService.GenerateExcelReport()
+	_, err := opService.GenerateExcelReport()
 	if err != nil {
 		logger.Error("Failed to generate report", "error", err)
 		return
