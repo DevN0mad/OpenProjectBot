@@ -7,30 +7,35 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	// Список проектов 16 - android, 19 - СВОД
-	projectIDs := []string{"16", "19"}
+	// Список ids проектов 16 - android, 19 - СВОД, 5 - Сервер репей
+	projectIDs := []string{"16", "19", "5"}
 
-	// Список исполнителей
+	// Список ids исполнителей
 	assigneeIDs := []string{"20", "8", "5", "9", "12", "14", "27", "15", "29", "25", "11", "13", "10", "16", "17", "28"}
 
-	// Используем Basic Auth с apikey и API токеном
-	opService := services.Init(
-		"http://192.168.101.21",
-		"1efdfbb38ce78e6ed606aecc0fb899c1e0883e9fb3875ecbaf68745603c357f6", // API токен
-		projectIDs,
-		assigneeIDs,
-	)
+	opts := services.OpenProjectOpts{
+		BaseURL:  "http://192.168.101.21",
+		ApiToken: "8fffc4ea73a79304ca3ede354f9828b066a5dc46fa804c9912c0f4ba26575a70", // Павел (token)
+		//ApiToken: "1efdfbb38ce78e6ed606aecc0fb899c1e0883e9fb3875ecbaf68745603c357f6", // Владислав (token)
+		//ApiToken:    "fab71bfbcdaa046d7438c51e5d66e6dc3e173286f78165d7dd793041c05ea", // Кирилл (token)
+		ProjectIDs:  projectIDs,
+		AssigneeIDs: assigneeIDs,
+		SaveDir:     "/home/gvladislav/Work/OpenProjectBot", // здесь нужен путь для сохранения файла
+	}
 
-	logger.Info("Тестируем Basic Auth с API токеном")
+	// Используем Basic Auth с apikey и API токеном
+	opService := services.Init(opts, logger)
+
+	logger.Info("Testing Basic Auth with API token")
 
 	// Генерируем Excel отчет
-	err := opService.GenerateExcelReport("test_report.xlsx")
+	err := opService.GenerateExcelReport()
 	if err != nil {
-		logger.Error("Ошибка генерации отчета", "error", err)
+		logger.Error("Failed to generate report", "error", err)
 		return
 	}
 
-	logger.Info("✅ Excel отчет успешно создан: test_report.xlsx")
+	logger.Info("✅ Excel report successfully created", "file", "text_report.xlsx")
 }

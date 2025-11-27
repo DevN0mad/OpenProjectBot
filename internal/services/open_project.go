@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/DevN0mad/OpenProjectBot/internal/models"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,175 +16,161 @@ import (
 )
 
 // OpenProjectService основной сервис для работы с OpenProject
+
+type OpenProjectOpts struct {
+	BaseURL     string   `yaml:"baseURL" validate:"required"`
+	ApiToken    string   `yaml:"apiToken" validate:"required"`
+	ProjectIDs  []string `yaml:"projectIDs" validate:"required"`
+	AssigneeIDs []string `yaml:"assigneeIDs" validate:"required"`
+	SaveDir     string   `yaml:"saveDir" validate:"required"`
+}
+
 type OpenProjectService struct {
-	baseURL     string   `yaml:"baseURL" validate:"required"`
-	apiToken    string   `yaml:"apiToken" validate:"required"`
-	projectIDs  []string `yaml:"projectIDs" validate:"required"`
-	assigneeIDs []string `yaml:"assigneeIDs" validate:"required"`
-	client      *http.Client
-}
-
-// WorkPackage представляет задачу в OpenProject
-type WorkPackage struct {
-	ID      int    `json:"id"`
-	Subject string `json:"subject"`
-	Links   struct {
-		Type struct {
-			Title string `json:"title"`
-			Href  string `json:"href"` // Добавляем href для получения ID
-		} `json:"type"`
-		Status struct {
-			Title string `json:"title"`
-		} `json:"status"`
-		Assignee struct {
-			Title string `json:"title"`
-			Href  string `json:"href"` // Добавляем href
-		} `json:"assignee"`
-		Responsible struct {
-			Title string `json:"title"`
-		} `json:"responsible"`
-		Project struct {
-			Title string `json:"title"`
-			Href  string `json:"href"` // Добавляем href
-		} `json:"project"`
-	} `json:"_links"`
-	StartDate *string `json:"startDate"`
-	DueDate   *string `json:"dueDate"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
-}
-
-// WorkPackageResponse представляет ответ API с задачами
-type WorkPackageResponse struct {
-	Embedded struct {
-		Elements []WorkPackage `json:"elements"`
-	} `json:"_embedded"`
-	Total int `json:"total"`
-}
-
-// EmployeeStats представляет статистику по сотруднику
-type EmployeeStats struct {
-	Name            string
-	InProgress      int
-	SentToTestToday int
-	Backlog         int
+	opts   OpenProjectOpts
+	logger *slog.Logger
+	client *http.Client
 }
 
 // Init инициализирует сервис с API токеном
-func Init(baseURL, apiToken string, projectIDs, assigneeIDs []string) *OpenProjectService {
+func Init(opts OpenProjectOpts, logger *slog.Logger) *OpenProjectService {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	logger.Info("ckech init func")
 	return &OpenProjectService{
-		baseURL:     baseURL,
-		apiToken:    apiToken,
-		projectIDs:  projectIDs,
-		assigneeIDs: assigneeIDs,
-		client:      &http.Client{Timeout: 30 * time.Second},
+		opts:   opts,
+		logger: logger,
+		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // GetWorkPackages получает все задачи проекта через Basic Auth
-func (s *OpenProjectService) GetWorkPackages() ([]WorkPackage, error) {
-	var allWorkPackages []WorkPackage
+func (s *OpenProjectService) GetWorkPackages() ([]models.WorkPackage, error) {
+	var allWorkPackages []models.WorkPackage
 
-	for _, projectID := range s.projectIDs {
+	s.logger.Info("Starting tasks export", "projects_count", len(s.opts.ProjectIDs))
+
+	for i, projectID := range s.opts.ProjectIDs {
+		s.logger.Info("Processing project", "current", i+1, "total", len(s.opts.ProjectIDs), "project_id", projectID)
+
 		workPackages, err := s.getWorkPackagesForProject(projectID)
 		if err != nil {
+			s.logger.Error("❌ Failed to get tasks for project", "project_id", projectID, "error", err)
 			return nil, fmt.Errorf("ошибка получения задач для проекта %s: %w", projectID, err)
 		}
 
 		allWorkPackages = append(allWorkPackages, workPackages...)
+		s.logger.Info("✅ Project tasks added", "project_id", projectID, "added", len(workPackages), "total", len(allWorkPackages))
 	}
+
+	s.logger.Info("✅ Total active tasks found", "count", len(allWorkPackages))
 
 	return allWorkPackages, nil
 }
 
 // getWorkPackagesForProject получает все задачи для конкретного проекта
-func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]WorkPackage, error) {
-	// Рассчитываем временной диапазон: с 17:00 прошлого дня до 17:00 текущего дня
-	location, err := time.LoadLocation("Europe/Moscow")
-	if err != nil {
-		location = time.Local
+func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]models.WorkPackage, error) {
+	var allWorkPackages []models.WorkPackage
+	page := 1
+	pageSize := 100
+
+	s.logger.Debug("Starting pagination for project", "project_id", projectID)
+
+	for {
+		s.logger.Debug("Fetching page", "page", page)
+
+		baseURL := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.opts.BaseURL, projectID)
+
+		// Фильтр: статус НЕ равен 12 (не закрыто)
+		filters := `[{"status":{"operator": "!","values":["12"]}}]`
+
+		params := url.Values{}
+		params.Add("filters", filters)
+		params.Add("pageSize", fmt.Sprintf("%d", pageSize))
+		params.Add("offset", fmt.Sprintf("%d", (page-1)*pageSize))
+
+		fullURL := baseURL + "?" + params.Encode()
+
+		workPackages, total, err := s.fetchWorkPackagesPage(fullURL)
+		if err != nil {
+			return nil, err
+		}
+
+		s.logger.Debug("Page tasks received", "page", page, "tasks_on_page", len(workPackages), "total_in_project", total)
+
+		allWorkPackages = append(allWorkPackages, workPackages...)
+
+		// Проверяем, есть ли еще страницы
+		if len(allWorkPackages) >= total {
+			s.logger.Debug("Pagination completed for project", "project_id", projectID)
+			break
+		}
+
+		// Защита от бесконечного цикла
+		if page > 100 {
+			s.logger.Warn("Pagination interrupted - too many pages", "max_pages", 100)
+			break
+		}
+
+		page++
 	}
-	now := time.Now().In(location)
 
-	// Сегодня в 17:00 (время работы бота)
-	today17 := time.Date(now.Year(), now.Month(), now.Day(), 17, 0, 0, 0, location)
+	// Фильтруем по исполнителю на стороне Go
+	filteredPackages := s.filterByAssignees(allWorkPackages, s.opts.AssigneeIDs)
 
-	// Вчера в 17:00
-	yesterday := now.AddDate(0, 0, -1)
-	yesterday17 := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 17, 0, 0, 0, location)
+	s.logger.Info("Project tasks processed", "project_id", projectID, "received", len(allWorkPackages), "after_filtering", len(filteredPackages))
 
-	// Форматируем даты в формат для OP
-	startDate := yesterday17.Format("2006-01-02T15:04:05Z")
-	endDate := today17.Format("2006-01-02T15:04:05Z")
+	return filteredPackages, nil
+}
 
-	baseURL := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.baseURL, projectID)
-
-	// Только фильтр по дате
-	filters := fmt.Sprintf(
-		`[{"updatedAt":{"operator":"<>d","values":["%s","%s"]}}]`,
-		startDate, endDate,
-	)
-
-	params := url.Values{}
-	params.Add("filters", filters)
-	fullURL := baseURL + "?" + params.Encode()
-
-	fmt.Printf("URL запроса: %s\n", fullURL)
-
-	req, err := http.NewRequest("GET", fullURL, nil)
+// fetchWorkPackagesPage получает одну страницу задач
+func (s *OpenProjectService) fetchWorkPackagesPage(url string) ([]models.WorkPackage, int, error) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
+		return nil, 0, fmt.Errorf("ошибка создания запроса: %w", err)
 	}
 
-	// Basic Auth: username = "apikey", password = API токен
-	auth := "apikey:" + s.apiToken
+	auth := "apikey:" + s.opts.ApiToken
 	basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 	req.Header.Set("Authorization", basicAuth)
 	req.Header.Set("Content-Type", "application/json")
 
-	// Логируем период для отладки
-	fmt.Printf("Запрос задач за период: %s - %s\n",
-		yesterday17.Format("2006-01-02 15:04"),
-		today17.Format("2006-01-02 15:04"))
-
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка выполнения запроса: %w", err)
+		return nil, 0, fmt.Errorf("ошибка выполнения запр: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ошибка API %d: %s", resp.StatusCode, string(body))
+		return nil, 0, fmt.Errorf("ошибка API %d: %s", resp.StatusCode, string(body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка чтения ответа: %w", err)
+		return nil, 0, fmt.Errorf("ошибка чтения ответа: %w", err)
 	}
 
-	var result WorkPackageResponse
+	var result models.WorkPackageResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("ошибка парсинга JSON: %w", err)
+		return nil, 0, fmt.Errorf("ошибка парсинга JSON: %w", err)
 	}
 
-	// Фильтруем по исполнителю на стороне Go
-	filteredPackages := s.filterByAssignees(result.Embedded.Elements, s.assigneeIDs)
+	// Получаем общее количество из заголовков
+	total := result.Total
 
-	fmt.Printf("Получено задач: %d (после фильтрации: %d)\n",
-		len(result.Embedded.Elements), len(filteredPackages))
-
-	return filteredPackages, nil
+	return result.Embedded.Elements, total, nil
 }
 
 // filterByAssignees фильтрует исполнителей по assigneeIDs
-func (s *OpenProjectService) filterByAssignees(workPackages []WorkPackage, assigneeIDs []string) []WorkPackage {
+func (s *OpenProjectService) filterByAssignees(workPackages []models.WorkPackage, assigneeIDs []string) []models.WorkPackage {
 	assigneeMap := make(map[string]bool)
 	for _, id := range assigneeIDs {
 		assigneeMap[id] = true
 	}
 
-	var filtered []WorkPackage
+	var filtered []models.WorkPackage
 	for _, wp := range workPackages {
 		if wp.Links.Assignee.Href != "" {
 			// Извлекаем ID из href (например: "/api/v3/users/20")
@@ -205,7 +193,7 @@ func extractIDFromHref(href string) string {
 }
 
 // GenerateExcelReport создает Excel файл с двумя листами
-func (s *OpenProjectService) GenerateExcelReport(filePath string) error {
+func (s *OpenProjectService) GenerateExcelReport() error {
 	// Получаем задачи
 	workPackages, err := s.GetWorkPackages()
 	if err != nil {
@@ -222,24 +210,26 @@ func (s *OpenProjectService) GenerateExcelReport(filePath string) error {
 
 	// Фильтруем только ошибки
 	errorTasks := s.filterErrorTasks(workPackages)
-
-	jsonErrorTasks, err := json.MarshalIndent(errorTasks, "", "  ")
-	if err != nil {
-		return fmt.Errorf("ошибка форматирования JSON: %w", err)
-	}
-
-	fmt.Printf("ERROR TASKS (%d):\n%s\n", len(errorTasks), string(jsonErrorTasks))
+	//
+	//jsonErrorTasks, err := json.MarshalIndent(errorTasks, "", "  ")
+	//if err != nil {
+	//	return fmt.Errorf("ошибка форматирования JSON: %w", err)
+	//}
+	//
+	//fmt.Printf("ERROR TASKS (%d):\n%s\n", len(errorTasks), string(jsonErrorTasks))
 
 	// Собираем статистику по сотрудникам
 	employeeStats := s.calculateEmployeeStats(workPackages)
 
+	s.logger.Info("Creating Excel file", "total_tasks", len(workPackages), "error_tasks", len(errorTasks), "employees", len(employeeStats))
+
 	// Создаем Excel файл
-	return s.createExcelFile(filePath, errorTasks, employeeStats)
+	return s.createExcelFile(s.opts.SaveDir, errorTasks, employeeStats)
 }
 
 // filterErrorTasks фильтрует только задачи типа "Ошибка"
-func (s *OpenProjectService) filterErrorTasks(tasks []WorkPackage) []WorkPackage {
-	var errorTasks []WorkPackage
+func (s *OpenProjectService) filterErrorTasks(tasks []models.WorkPackage) []models.WorkPackage {
+	var errorTasks []models.WorkPackage
 	for _, task := range tasks {
 		if task.Links.Type.Title == "Ошибка" {
 			errorTasks = append(errorTasks, task)
@@ -249,8 +239,8 @@ func (s *OpenProjectService) filterErrorTasks(tasks []WorkPackage) []WorkPackage
 }
 
 // calculateEmployeeStats рассчитывает статистику по сотрудникам
-func (s *OpenProjectService) calculateEmployeeStats(tasks []WorkPackage) []EmployeeStats {
-	statsMap := make(map[string]*EmployeeStats)
+func (s *OpenProjectService) calculateEmployeeStats(tasks []models.WorkPackage) []models.EmployeeStats {
+	statsMap := make(map[string]*models.EmployeeStats)
 	today := time.Now().Format("2006-01-02")
 
 	for _, task := range tasks {
@@ -260,7 +250,7 @@ func (s *OpenProjectService) calculateEmployeeStats(tasks []WorkPackage) []Emplo
 		}
 
 		if _, exists := statsMap[assignee]; !exists {
-			statsMap[assignee] = &EmployeeStats{Name: assignee}
+			statsMap[assignee] = &models.EmployeeStats{Name: assignee}
 		}
 
 		stats := statsMap[assignee]
@@ -282,7 +272,7 @@ func (s *OpenProjectService) calculateEmployeeStats(tasks []WorkPackage) []Emplo
 		}
 	}
 
-	var stats []EmployeeStats
+	var stats []models.EmployeeStats
 	for _, stat := range statsMap {
 		stats = append(stats, *stat)
 	}
@@ -317,7 +307,7 @@ func (s *OpenProjectService) containsStatus(status string, statusList []string) 
 }
 
 // createExcelFile создает Excel файл с двумя листами
-func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []WorkPackage, employeeStats []EmployeeStats) error {
+func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) error {
 	f := excelize.NewFile()
 
 	// Удаляем дефолтный лист
@@ -398,8 +388,9 @@ func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []WorkP
 	// Устанавливаем активным лист "ФИО"
 	f.SetActiveSheet(employeeSheetIndex)
 
+	s.logger.Info("Saving Excel file", "path", filePath)
 	// Сохраняем файл
-	return f.SaveAs(filePath)
+	return f.SaveAs("test_report.xlsx")
 }
 
 // parseDate парсит строку даты в формате "2006-01-02"
