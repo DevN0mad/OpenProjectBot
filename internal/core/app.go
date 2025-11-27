@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/DevN0mad/OpenProjectBot/internal/config"
+	"github.com/DevN0mad/OpenProjectBot/internal/server"
 	"github.com/DevN0mad/OpenProjectBot/internal/services"
 )
 
@@ -17,7 +18,9 @@ type App struct {
 
 	mu             sync.Mutex
 	tg             *services.TelegramBotService
+	opSrv          *services.OpenProjectService
 	dailyJob       *services.DailyJobService
+	adminSrv       *server.AdminServer
 	servicesCancel context.CancelFunc
 }
 
@@ -54,17 +57,33 @@ func (a *App) ApplyConfig(cfg config.Config) error {
 		return fmt.Errorf("init telegram bot: %w", err)
 	}
 
-	dailyJob, err := services.NewDailyJobService(tg, cfg.DailyJob, a.logger)
+	opSrv := services.Init(cfg.OpenProject, a.logger)
+	if opSrv == nil {
+		cancel()
+		a.logger.Error("init open project service", "error", "open project service is nil")
+		return fmt.Errorf("init open project service: %s", "open project service is nil")
+	}
+
+	dailyJob, err := services.NewDailyJobService(tg, opSrv, cfg.DailyJob, a.logger)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("init daily job: %w", err)
 	}
 
+	adminSrv := server.NewAdminHandler(a.logger, opSrv, &cfg.HttpServer)
+
 	go tg.Start(ctx)
 	go dailyJob.Start(ctx)
+	go func() {
+		if err := adminSrv.Start(ctx); err != nil {
+			a.logger.Error("Admin server exited with error", "error", err)
+		}
+	}()
 
 	a.tg = tg
 	a.dailyJob = dailyJob
+	a.opSrv = opSrv
+	a.adminSrv = adminSrv
 	a.servicesCancel = cancel
 
 	a.logger.Info("Services reinitialized from config")

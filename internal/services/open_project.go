@@ -4,13 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/DevN0mad/OpenProjectBot/internal/models"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/DevN0mad/OpenProjectBot/internal/models"
 
 	"github.com/xuri/excelize/v2"
 )

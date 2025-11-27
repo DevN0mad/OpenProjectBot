@@ -8,13 +8,16 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 
+	"github.com/DevN0mad/OpenProjectBot/internal/server"
 	"github.com/DevN0mad/OpenProjectBot/internal/services"
 )
 
 // Config представляет конфигурацию приложения.
 type Config struct {
-	TelegramBot services.TelegramOpts `yaml:"telegram_bot" mapstructure:"telegram_bot"`
-	DailyJob    services.DailyJobOpts `yaml:"daily_job"    mapstructure:"daily_job"`
+	TelegramBot services.TelegramOpts    `yaml:"telegram_bot" mapstructure:"telegram_bot"`
+	DailyJob    services.DailyJobOpts    `yaml:"daily_job"    mapstructure:"daily_job"`
+	OpenProject services.OpenProjectOpts `yaml:"open_project" mapstructure:"open_project"`
+	HttpServer  server.AdminServerOpts   `yaml:"http_server"  mapstructure:"http_server"`
 }
 
 // Manager управляет конфигурацией приложения, обеспечивая загрузку,

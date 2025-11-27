@@ -20,13 +20,13 @@ type DailyJobService struct {
 	minute   int
 	timezone *time.Location
 	logger   *slog.Logger
-	// TODO добавить сервис по созданию отчета
+	projSrv  *OpenProjectService
 }
 
 // NewDailyJobService создаёт сервис для ежедневной отправки файлов.
 func NewDailyJobService(
 	botServ *TelegramBotService,
-	// TODO добавить сервис по созданию отчета
+	projSrv *OpenProjectService,
 	opts DailyJobOpts,
 	logger *slog.Logger,
 ) (*DailyJobService, error) {
@@ -38,6 +38,10 @@ func NewDailyJobService(
 		return nil, fmt.Errorf("bot service is required")
 	}
 
+	if projSrv == nil {
+		return nil, fmt.Errorf("open project service is required")
+	}
+
 	logger.Info("Daily job configured",
 		"hour", opts.Hour,
 		"minute", opts.Minute,
@@ -45,6 +49,7 @@ func NewDailyJobService(
 
 	return &DailyJobService{
 		botServ:  botServ,
+		projSrv:  projSrv,
 		hour:     opts.Hour,
 		minute:   opts.Minute,
 		timezone: time.Local,
@@ -65,7 +70,8 @@ func (d *DailyJobService) Start(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			// TODO вызов сервиса по созданию отчета и получение пути к файлу
+			path, err := d.projSrv.GenerateExcelReport()
+			if err != nil
 			var filePath string
 			if err := d.botServ.SendFile(ctx, filePath); err != nil {
 				d.logger.Error("Daily report sending failed", "error", err)
