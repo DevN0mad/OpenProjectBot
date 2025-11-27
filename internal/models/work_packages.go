@@ -11,6 +11,7 @@ type WorkPackage struct {
 		} `json:"type"`
 		Status struct {
 			Title string `json:"title"`
+			Href  string `json:"href"`
 		} `json:"status"`
 		Assignee struct {
 			Title string `json:"title"`

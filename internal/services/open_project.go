@@ -45,29 +45,73 @@ func Init(opts OpenProjectOpts, logger *slog.Logger) *OpenProjectService {
 	}
 }
 
-// GetWorkPackages получает все задачи проекта через Basic Auth
 func (s *OpenProjectService) GetWorkPackages() ([]models.WorkPackage, error) {
 	var allWorkPackages []models.WorkPackage
 
-	s.logger.Info("Starting tasks export", "projects_count", len(s.opts.ProjectIDs))
-
-	for i, projectID := range s.opts.ProjectIDs {
-		s.logger.Info("Processing project", "current", i+1, "total", len(s.opts.ProjectIDs), "project_id", projectID)
-
+	for _, projectID := range s.opts.ProjectIDs {
 		workPackages, err := s.getWorkPackagesForProject(projectID)
 		if err != nil {
-			s.logger.Error("❌ Failed to get tasks for project", "project_id", projectID, "error", err)
-			return nil, fmt.Errorf("ошибка получения задач для проекта %s: %w", projectID, err)
+			return nil, err
 		}
-
 		allWorkPackages = append(allWorkPackages, workPackages...)
-		s.logger.Info("✅ Project tasks added", "project_id", projectID, "added", len(workPackages), "total", len(allWorkPackages))
 	}
 
-	s.logger.Info("✅ Total active tasks found", "count", len(allWorkPackages))
+	// 🔍 ДЕБАГ ИНФОРМАЦИЯ
+	fmt.Printf("\n=== ДЕБАГ ИНФОРМАЦИЯ ===\n")
+	fmt.Printf("Всего задач после фильтрации: %d\n", len(allWorkPackages))
+
+	// Анализ по статусам
+	statusMap := make(map[string]int)
+	for _, wp := range allWorkPackages {
+		statusID := extractIDFromHref(wp.Links.Status.Href)
+		statusMap[fmt.Sprintf("%s (id:%s)", wp.Links.Status.Title, statusID)]++
+	}
+	fmt.Printf("Статусы: %v\n", statusMap)
+
+	// Анализ по исполнителям
+	assigneeMap := make(map[string]int)
+	for _, wp := range allWorkPackages {
+		assigneeMap[wp.Links.Assignee.Title]++
+	}
+	fmt.Printf("Исполнители: %v\n", assigneeMap)
+
+	fmt.Printf("=======================\n\n")
 
 	return allWorkPackages, nil
 }
+
+//// GetWorkPackages получает все задачи проекта через Basic Auth
+//func (s *OpenProjectService) GetWorkPackages() ([]models.WorkPackage, error) {
+//	var allWorkPackages []models.WorkPackage
+//
+//	s.logger.Info("Starting tasks export", "projects_count", len(s.opts.ProjectIDs))
+//
+//	for i, projectID := range s.opts.ProjectIDs {
+//		s.logger.Info("Processing project", "current", i+1, "total", len(s.opts.ProjectIDs), "project_id", projectID)
+//
+//		workPackages, err := s.getWorkPackagesForProject(projectID)
+//		if err != nil {
+//			s.logger.Error("❌ Failed to get tasks for project", "project_id", projectID, "error", err)
+//			return nil, fmt.Errorf("ошибка получения задач для проекта %s: %w", projectID, err)
+//		}
+//
+//		allWorkPackages = append(allWorkPackages, workPackages...)
+//		s.logger.Info("✅ Project tasks added", "project_id", projectID, "added", len(workPackages), "total", len(allWorkPackages))
+//	}
+//
+//	s.logger.Info("✅ Total active tasks found", "count", len(allWorkPackages))
+//
+//	if len(allWorkPackages) > 0 {
+//		jsonData, err := json.MarshalIndent(allWorkPackages, "", "  ")
+//		if err != nil {
+//			fmt.Printf("❌ Ошибка форматирования JSON: %v\n", err)
+//		} else {
+//			fmt.Printf("📋 ДЕТАЛИ ЗАДАЧ:\n%s\n", string(jsonData))
+//		}
+//	}
+//
+//	return allWorkPackages, nil
+//}
 
 // getWorkPackagesForProject получает все задачи для конкретного проекта
 func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]models.WorkPackage, error) {
@@ -83,7 +127,7 @@ func (s *OpenProjectService) getWorkPackagesForProject(projectID string) ([]mode
 		baseURL := fmt.Sprintf("%s/api/v3/projects/%s/work_packages", s.opts.BaseURL, projectID)
 
 		// Фильтр: статус НЕ равен 12 (не закрыто)
-		filters := `[{"status":{"operator": "!","values":["12"]}}]`
+		filters := `[{"status":{"operator": "!","values":["8", "10", "12", "14"]}}]`
 
 		params := url.Values{}
 		params.Add("filters", filters)
@@ -193,11 +237,11 @@ func extractIDFromHref(href string) string {
 }
 
 // GenerateExcelReport создает Excel файл с двумя листами
-func (s *OpenProjectService) GenerateExcelReport() error {
+func (s *OpenProjectService) GenerateExcelReport() (string, error) {
 	// Получаем задачи
 	workPackages, err := s.GetWorkPackages()
 	if err != nil {
-		return fmt.Errorf("ошибка получения задач: %w", err)
+		return "", fmt.Errorf("ошибка получения задач: %w", err)
 	}
 
 	// Красиво форматируем JSON
@@ -307,7 +351,7 @@ func (s *OpenProjectService) containsStatus(status string, statusList []string) 
 }
 
 // createExcelFile создает Excel файл с двумя листами
-func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) error {
+func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) (string, error) {
 	f := excelize.NewFile()
 
 	// Удаляем дефолтный лист
@@ -390,7 +434,7 @@ func (s *OpenProjectService) createExcelFile(filePath string, errorTasks []model
 
 	s.logger.Info("Saving Excel file", "path", filePath)
 	// Сохраняем файл
-	return f.SaveAs("test_report.xlsx")
+	return "", f.SaveAs("test_report.xlsx")
 }
 
 // parseDate парсит строку даты в формате "2006-01-02"
