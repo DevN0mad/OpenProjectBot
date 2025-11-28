@@ -49,6 +49,7 @@ func Init(opts OpenProjectOpts, logger *slog.Logger) *OpenProjectService {
 	}
 }
 
+// GetWorkPackagesByUsers получает задачи по всем пользователям и проектам
 func (s *OpenProjectService) GetWorkPackagesByUsers() ([]models.WorkPackage, error) {
 	var allWorkPackages []models.WorkPackage
 	var mu sync.Mutex
@@ -109,15 +110,16 @@ func (s *OpenProjectService) GetWorkPackagesByUsers() ([]models.WorkPackage, err
 func (s *OpenProjectService) getWorkPackagesForUser(projectID, assigneeID string) ([]models.WorkPackage, error) {
 	baseURL := fmt.Sprintf("%s/api/v3/work_packages", s.opts.BaseURL)
 
+	// Фильтруем задачи, которые не закрыты (статус не равен 12)
 	filters := fmt.Sprintf(`[
-        {"status": {"operator": "!", "values": ["12", "10", "14", "8"]}},
+        {"status": {"operator": "!", "values": ["8", "12", "19"]}},
         {"project": {"operator": "=", "values": ["%s"]}},
         {"assignee": {"operator": "=", "values": ["%s"]}}
     ]`, projectID, assigneeID)
 
 	params := url.Values{}
 	params.Add("filters", filters)
-	params.Add("pageSize", "100")
+	params.Add("pageSize", "500")
 
 	fullURL := baseURL + "?" + params.Encode()
 
@@ -149,16 +151,7 @@ func (s *OpenProjectService) getWorkPackagesForUser(projectID, assigneeID string
 	return result.Embedded.Elements, nil
 }
 
-// extractIDFromHref извлекает из пути (href) идентификатор
-func extractIDFromHref(href string) string {
-	parts := strings.Split(href, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
-}
-
-// GenerateExcelReport создает Excel файл с двумя листами
+// GenerateExcelReport создает Excel файл с тремя листами
 func (s *OpenProjectService) GenerateExcelReport() (string, error) {
 	// Получаем задачи по всем пользователям
 	workPackages, err := s.GetWorkPackagesByUsers()
@@ -166,202 +159,166 @@ func (s *OpenProjectService) GenerateExcelReport() (string, error) {
 		return "", fmt.Errorf("ошибка получения задач: %w", err)
 	}
 
-	// Проверим, есть ли задача 4600 (ДЛЯ ТЕСТА)
-	found := false
-	for _, wp := range workPackages {
-		if wp.ID == 4600 {
-			fmt.Printf("✅ ЗАДАЧА 4600 ТЕПЕРЬ В ВЫГРУЗКЕ! Статус: %s\n", wp.Links.Status.Title)
-			found = true
-			break
-		}
-	}
+	s.logger.Info("Общее количество активных задач в выгрузке: ", "count", len(workPackages))
 
-	if !found {
-		fmt.Printf("❌ ЗАДАЧА 4600 ВСЕ ЕЩЕ НЕ В ВЫГРУЗКЕ\n")
-	}
+	// Фильтруем задачи по трем категориям
+	backlogTasks := s.filterBacklogTasks(workPackages)
+	inProgressTasks := s.filterInProgressTasks(workPackages)
+	readyForTestTasks := s.filterReadyForTestTasks(workPackages)
 
-	s.logger.Info("Общее количество задач в выгрузке: ", "count", len(workPackages))
+	// Создаем сводную статистику
+	summaryStats := s.calculateSummaryStats(backlogTasks, inProgressTasks, readyForTestTasks)
 
-	// Фильтруем только ошибки
-	errorTasks := s.filterErrorTasks(workPackages)
-
-	// Собираем статистику по сотрудникам
-	employeeStats := s.calculateEmployeeStats(workPackages)
-
-	s.logger.Info("Creating Excel file", "total_tasks", len(workPackages), "error_tasks", len(errorTasks), "employees", len(employeeStats))
+	s.logger.Info("Creating Excel file",
+		"backlog_tasks", len(backlogTasks),
+		"in_progress_tasks", len(inProgressTasks),
+		"ready_for_test_tasks", len(readyForTestTasks),
+		"employees", len(summaryStats))
 
 	// Создаем Excel файл
-	return s.createExcelFile(errorTasks, employeeStats)
+	return s.createExcelFile(backlogTasks, inProgressTasks, readyForTestTasks, summaryStats)
 }
 
-// filterErrorTasks фильтрует только задачи типа "Ошибка"
-func (s *OpenProjectService) filterErrorTasks(tasks []models.WorkPackage) []models.WorkPackage {
-	var errorTasks []models.WorkPackage
+// filterBacklogTasks фильтрует задачи для бэклога (активные, кроме "Готово к тесту")
+func (s *OpenProjectService) filterBacklogTasks(tasks []models.WorkPackage) []models.WorkPackage {
+	var backlogTasks []models.WorkPackage
 	for _, task := range tasks {
-		if task.ID == 4600 {
-			s.logger.Info("Filtered task with ID 4600", "task", task)
+		status := strings.ToLower(task.Links.Status.Title)
+		statusId := extractIDFromHref(task.Links.Status.Href)
+		// Исключаем статусы "Готово к тесту" и его варианты
+		if !s.containsStatus(status, []string{"готово к тесту", "готово к тестированию", "ready for test"}) && statusId != "7" {
+			backlogTasks = append(backlogTasks, task)
 		}
-		taskType := extractIDFromHref(task.Links.Type.Href)
-		if taskType == "7" {
-			errorTasks = append(errorTasks, task)
-
-		}
-		//if task.Links.Type.Title == "Ошибка" {
-		//	errorTasks = append(errorTasks, task)
-		//}
 	}
-	return errorTasks
+	return backlogTasks
 }
 
-// calculateEmployeeStats рассчитывает статистику по сотрудникам
-func (s *OpenProjectService) calculateEmployeeStats(tasks []models.WorkPackage) []models.EmployeeStats {
-	statsMap := make(map[string]*models.EmployeeStats)
+// filterInProgressTasks фильтрует задачи "В процессе"
+func (s *OpenProjectService) filterInProgressTasks(tasks []models.WorkPackage) []models.WorkPackage {
+	var inProgressTasks []models.WorkPackage
+	for _, task := range tasks {
+		status := strings.ToLower(task.Links.Status.Title)
+		if s.containsStatus(status, []string{"в процессе", "в работе", "in progress", "выполняется"}) {
+			inProgressTasks = append(inProgressTasks, task)
+		}
+	}
+	return inProgressTasks
+}
+
+// filterReadyForTestTasks фильтрует задачи "Готово к тесту" с сегодняшней датой передачи
+func (s *OpenProjectService) filterReadyForTestTasks(tasks []models.WorkPackage) []models.WorkPackage {
+	var readyForTestTasks []models.WorkPackage
 	today := time.Now().Format("2006-01-02")
 
 	for _, task := range tasks {
+		status := strings.ToLower(task.Links.Status.Title)
+		if s.containsStatus(status, []string{"готово к тесту", "готово к тестированию", "ready for test"}) {
+			// Проверяем кастомное поле "Дата передачи на тестирование"
+			// Предполагаем, что это поле доступно через task.CustomFields или аналогичное поле
+			testDate := s.getTestingTransferDate(task)
+			if testDate == today {
+				readyForTestTasks = append(readyForTestTasks, task)
+			}
+		}
+	}
+	return readyForTestTasks
+}
+
+// getTestingTransferDate получает дату передачи на тестирование из кастомных полей
+// Вам нужно адаптировать этот метод под структуру ваших кастомных полей в OpenProject
+func (s *OpenProjectService) getTestingTransferDate(task models.WorkPackage) string {
+	// Пример реализации - вам нужно настроить под вашу структуру данных
+	// Обычно кастомные поля находятся в task.CustomFields или аналогичной структуре
+
+	// Временная реализация - используем UpdatedAt как пример
+	// Замените на реальное поле из вашей структуры
+	if task.UpdatedAt != "" {
+		return strings.Split(task.UpdatedAt, "T")[0]
+	}
+	return ""
+}
+
+// EmployeeSummary статистика по сотрудникам для сводной таблицы
+type EmployeeSummary struct {
+	Name              string
+	InProgressCount   int
+	ReadyForTestCount int
+	BacklogCount      int
+}
+
+// calculateSummaryStats рассчитывает сводную статистику по сотрудникам
+func (s *OpenProjectService) calculateSummaryStats(backlogTasks, inProgressTasks, readyForTestTasks []models.WorkPackage) []EmployeeSummary {
+	statsMap := make(map[string]*EmployeeSummary)
+
+	// Считаем задачи бэклога
+	for _, task := range backlogTasks {
 		assignee := task.Links.Assignee.Title
 		if assignee == "" {
 			continue
 		}
-
 		if _, exists := statsMap[assignee]; !exists {
-			statsMap[assignee] = &models.EmployeeStats{Name: assignee}
+			statsMap[assignee] = &EmployeeSummary{Name: assignee}
 		}
-
-		stats := statsMap[assignee]
-
-		// Задачи в работе
-		if s.isInProgressStatus(task.Links.Status.Title) {
-			stats.InProgress++
-		}
-
-		// Задачи, переданные на тест сегодня
-		updatedDate := strings.Split(task.UpdatedAt, "T")[0] // Берем только дату из "2024-12-19T10:30:00Z"
-		if s.isSentToTestStatus(task.Links.Status.Title) && updatedDate == today {
-			stats.SentToTestToday++
-		}
-
-		// Бэклог
-		if s.isBacklogStatus(task.Links.Status.Title) {
-			stats.Backlog++
-		}
+		statsMap[assignee].BacklogCount++
 	}
 
-	var stats []models.EmployeeStats
+	// Считаем задачи в работе
+	for _, task := range inProgressTasks {
+		assignee := task.Links.Assignee.Title
+		if assignee == "" {
+			continue
+		}
+		if _, exists := statsMap[assignee]; !exists {
+			statsMap[assignee] = &EmployeeSummary{Name: assignee}
+		}
+		statsMap[assignee].InProgressCount++
+	}
+
+	// Считаем задачи готовые к тесту
+	for _, task := range readyForTestTasks {
+		assignee := task.Links.Assignee.Title
+		if assignee == "" {
+			continue
+		}
+		if _, exists := statsMap[assignee]; !exists {
+			statsMap[assignee] = &EmployeeSummary{Name: assignee}
+		}
+		statsMap[assignee].ReadyForTestCount++
+	}
+
+	var summary []EmployeeSummary
 	for _, stat := range statsMap {
-		stats = append(stats, *stat)
+		summary = append(summary, *stat)
 	}
 
-	return stats
+	return summary
 }
 
-// Вспомогательные методы для определения статусов
-func (s *OpenProjectService) isInProgressStatus(status string) bool {
-	inProgressStatuses := []string{"в работе", "in progress", "выполняется"}
-	return s.containsStatus(status, inProgressStatuses)
-}
-
-func (s *OpenProjectService) isSentToTestStatus(status string) bool {
-	testStatuses := []string{"готово к тесту", "тестирование", "на тесте"}
-	return s.containsStatus(status, testStatuses)
-}
-
-func (s *OpenProjectService) isBacklogStatus(status string) bool {
-	backlogStatuses := []string{"новое", "new", "ожидание", "требует уточнения"}
-	return s.containsStatus(status, backlogStatuses)
-}
-
+// containsStatus проверяет содержит ли статус нужные ключевые слова
 func (s *OpenProjectService) containsStatus(status string, statusList []string) bool {
-	lowerStatus := strings.ToLower(status)
 	for _, s := range statusList {
-		if strings.Contains(lowerStatus, strings.ToLower(s)) {
+		if strings.Contains(status, strings.ToLower(s)) {
 			return true
 		}
 	}
 	return false
 }
 
-// createExcelFile создает Excel файл с двумя листами
-func (s *OpenProjectService) createExcelFile(errorTasks []models.WorkPackage, employeeStats []models.EmployeeStats) (string, error) {
+// createExcelFile создает Excel файл с тремя листами
+func (s *OpenProjectService) createExcelFile(backlogTasks, inProgressTasks, readyForTestTasks []models.WorkPackage, summaryStats []EmployeeSummary) (string, error) {
 	f := excelize.NewFile()
+
+	// 1. Лист "Бэклог"
+	s.createBacklogSheet(f, backlogTasks)
 
 	// Удаляем дефолтный лист
 	f.DeleteSheet("Sheet1")
 
-	// Создаем лист "Ошибки"
-	f.NewSheet("Ошибки")
+	// 2. Лист "Активные задачи"
+	s.createActiveTasksSheet(f, inProgressTasks, readyForTestTasks)
 
-	// Заголовки для листа "Ошибки"
-	headers := []string{
-		"ID", "Тема", "Тип", "Статус", "Назначенный",
-		"Ответственный", "Проект", "Дата начала", "Дата окончания",
-	}
-
-	// Устанавливаем заголовки
-	for i, header := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		f.SetCellValue("Ошибки", cell, header)
-	}
-
-	// Заполняем данные ошибок
-	for row, task := range errorTasks {
-		rowNum := row + 2
-
-		f.SetCellValue("Ошибки", fmt.Sprintf("A%d", rowNum), task.ID)
-		f.SetCellValue("Ошибки", fmt.Sprintf("B%d", rowNum), task.Subject)
-		f.SetCellValue("Ошибки", fmt.Sprintf("C%d", rowNum), task.Links.Type.Title)
-		f.SetCellValue("Ошибки", fmt.Sprintf("D%d", rowNum), task.Links.Status.Title)
-		f.SetCellValue("Ошибки", fmt.Sprintf("E%d", rowNum), task.Links.Assignee.Title)
-		f.SetCellValue("Ошибки", fmt.Sprintf("F%d", rowNum), task.Links.Responsible.Title)
-		f.SetCellValue("Ошибки", fmt.Sprintf("G%d", rowNum), task.Links.Project.Title)
-
-		if task.StartDate != nil {
-			f.SetCellValue("Ошибки", fmt.Sprintf("H%d", rowNum), formatDateForExcel(*task.StartDate))
-		}
-
-		if task.DueDate != nil {
-			f.SetCellValue("Ошибки", fmt.Sprintf("I%d", rowNum), formatDateForExcel(*task.DueDate))
-		}
-	}
-
-	// Автоматическая ширина колонок для листа "Ошибки"
-	for i := range headers {
-		colName, _ := excelize.ColumnNumberToName(i + 1)
-		f.SetColWidth("Ошибки", colName, colName, 20)
-	}
-
-	// Создаем лист "ФИО"
-	employeeSheetIndex, _ := f.NewSheet("ФИО")
-
-	// Заголовки для листа "ФИО"
-	employeeHeaders := []string{
-		"ФИО", "В работе", "Передано на тесты сегодня", "Бэклог",
-	}
-
-	// Устанавливаем заголовки
-	for i, header := range employeeHeaders {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		f.SetCellValue("ФИО", cell, header)
-	}
-
-	// Заполняем статистику сотрудников
-	for row, stat := range employeeStats {
-		rowNum := row + 2
-
-		f.SetCellValue("ФИО", fmt.Sprintf("A%d", rowNum), stat.Name)
-		f.SetCellValue("ФИО", fmt.Sprintf("B%d", rowNum), stat.InProgress)
-		f.SetCellValue("ФИО", fmt.Sprintf("C%d", rowNum), stat.SentToTestToday)
-		f.SetCellValue("ФИО", fmt.Sprintf("D%d", rowNum), stat.Backlog)
-	}
-
-	// Автоматическая ширина колонок для листа "ФИО"
-	for i := range employeeHeaders {
-		colName, _ := excelize.ColumnNumberToName(i + 1)
-		f.SetColWidth("ФИО", colName, colName, 25)
-	}
-
-	// Устанавливаем активным лист "ФИО"
-	f.SetActiveSheet(employeeSheetIndex)
+	// 3. Лист "Сводная"
+	s.createSummarySheet(f, summaryStats)
 
 	// Создаем имя файла с timestamp
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
@@ -379,18 +336,162 @@ func (s *OpenProjectService) createExcelFile(errorTasks []models.WorkPackage, em
 
 	s.logger.Info("Excel report created successfully",
 		"file_path", filePath,
-		"error_tasks", len(errorTasks),
-		"employee_stats", len(employeeStats))
-	// Сохраняем файл
+		"backlog_tasks", len(backlogTasks),
+		"in_progress_tasks", len(inProgressTasks),
+		"ready_for_test_tasks", len(readyForTestTasks))
+
 	return filePath, nil
 }
 
-// parseDate парсит строку даты в формате "2006-01-02"
-func parseDate(dateStr string) (time.Time, error) {
-	if dateStr == "" {
-		return time.Time{}, fmt.Errorf("пустая дата")
+// createBacklogSheet создает лист с задачами бэклога
+func (s *OpenProjectService) createBacklogSheet(f *excelize.File, tasks []models.WorkPackage) {
+	f.NewSheet("Бэклог")
+
+	headers := []string{
+		"ID", "Тема", "Тип", "Статус", "Назначенный",
+		"Ответственный", "Проект", "Дата создания", "Дата окончания", "Дата обновления",
 	}
-	return time.Parse("2006-01-02", dateStr)
+
+	// Устанавливаем заголовки
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue("Бэклог", cell, header)
+	}
+
+	// Заполняем данные
+	for row, task := range tasks {
+		rowNum := row + 2
+		f.SetCellValue("Бэклог", fmt.Sprintf("A%d", rowNum), task.ID)
+		f.SetCellValue("Бэклог", fmt.Sprintf("B%d", rowNum), task.Subject)
+		f.SetCellValue("Бэклог", fmt.Sprintf("C%d", rowNum), task.Links.Type.Title)
+		f.SetCellValue("Бэклог", fmt.Sprintf("D%d", rowNum), task.Links.Status.Title)
+		f.SetCellValue("Бэклог", fmt.Sprintf("E%d", rowNum), task.Links.Assignee.Title)
+		f.SetCellValue("Бэклог", fmt.Sprintf("F%d", rowNum), task.Links.Responsible.Title)
+		f.SetCellValue("Бэклог", fmt.Sprintf("G%d", rowNum), task.Links.Project.Title)
+		//f.SetCellValue("Бэклог", fmt.Sprintf("H%d", rowNum), formatDateForExcel(strings.Split(task.CreatedAt, "T")[0]))
+		//f.SetCellValue("Бэклог", fmt.Sprintf("I%d", rowNum), formatDateForExcel(strings.Split(task.UpdatedAt, "T")[0]))
+
+		// Дата создания (берем только дату из timestamp)
+		createdDate := s.extractDateOnly(task.CreatedAt)
+		f.SetCellValue("Бэклог", fmt.Sprintf("H%d", rowNum), createdDate)
+
+		// Дата окончания (может быть пустой)
+		var dueDate string
+		if task.DueDate != nil {
+			dueDate = formatDateForExcel(*task.DueDate)
+		}
+		f.SetCellValue("Бэклог", fmt.Sprintf("I%d", rowNum), dueDate)
+
+		// Дата обновления (берем только дату из timestamp)
+		updatedDate := s.extractDateOnly(task.UpdatedAt)
+		f.SetCellValue("Бэклог", fmt.Sprintf("J%d", rowNum), updatedDate)
+	}
+
+	// Автоматическая ширина колонок
+	for i := range headers {
+		colName, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth("Бэклог", colName, colName, 20)
+	}
+}
+
+// extractDateOnly извлекает только дату из строки формата ISO
+func (s *OpenProjectService) extractDateOnly(isoString string) string {
+	if isoString == "" {
+		return ""
+	}
+
+	// Разделяем по "T" чтобы получить только дату
+	parts := strings.Split(isoString, "T")
+	if len(parts) > 0 {
+		return formatDateForExcel(parts[0])
+	}
+
+	return ""
+}
+
+// createActiveTasksSheet создает лист с активными задачами
+func (s *OpenProjectService) createActiveTasksSheet(f *excelize.File, inProgressTasks, readyForTestTasks []models.WorkPackage) {
+	f.NewSheet("Активные задачи")
+
+	headers := []string{
+		"ID", "Тема", "Тип", "Статус", "Назначенный",
+		"Ответственный", "Проект",
+	}
+
+	// Устанавливаем заголовки
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue("Активные задачи", cell, header)
+	}
+
+	rowNum := 2
+
+	// Добавляем задачи "В процессе"
+	for _, task := range inProgressTasks {
+		f.SetCellValue("Активные задачи", fmt.Sprintf("A%d", rowNum), task.ID)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("B%d", rowNum), task.Subject)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("C%d", rowNum), task.Links.Type.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("D%d", rowNum), task.Links.Status.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("E%d", rowNum), task.Links.Assignee.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("F%d", rowNum), task.Links.Responsible.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("G%d", rowNum), task.Links.Project.Title)
+		//f.SetCellValue("Активные задачи", fmt.Sprintf("H%d", rowNum), "") // Дата передачи на тест не применима
+		//f.SetCellValue("Активные задачи", fmt.Sprintf("I%d", rowNum), "В процессе")
+		rowNum++
+	}
+
+	// Добавляем задачи "Готово к тесту"
+	for _, task := range readyForTestTasks {
+		f.SetCellValue("Активные задачи", fmt.Sprintf("A%d", rowNum), task.ID)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("B%d", rowNum), task.Subject)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("C%d", rowNum), task.Links.Type.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("D%d", rowNum), task.Links.Status.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("E%d", rowNum), task.Links.Assignee.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("F%d", rowNum), task.Links.Responsible.Title)
+		f.SetCellValue("Активные задачи", fmt.Sprintf("G%d", rowNum), task.Links.Project.Title)
+		//f.SetCellValue("Активные задачи", fmt.Sprintf("H%d", rowNum), s.getTestingTransferDate(task))
+		//f.SetCellValue("Активные задачи", fmt.Sprintf("I%d", rowNum), "Готово к тесту")
+		rowNum++
+	}
+
+	// Автоматическая ширина колонок
+	for i := range headers {
+		colName, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth("Активные задачи", colName, colName, 20)
+	}
+}
+
+// createSummarySheet создает сводный лист
+func (s *OpenProjectService) createSummarySheet(f *excelize.File, summaryStats []EmployeeSummary) {
+	summarySheetIndex, _ := f.NewSheet("Сводная")
+
+	headers := []string{
+		"Сотрудник", "В работе", "Передано на тесты сегодня", "Бэклог",
+	}
+
+	// Устанавливаем заголовки
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue("Сводная", cell, header)
+	}
+
+	// Заполняем статистику
+	for row, stat := range summaryStats {
+		rowNum := row + 2
+		f.SetCellValue("Сводная", fmt.Sprintf("A%d", rowNum), stat.Name)
+		f.SetCellValue("Сводная", fmt.Sprintf("B%d", rowNum), stat.InProgressCount)
+		f.SetCellValue("Сводная", fmt.Sprintf("C%d", rowNum), stat.ReadyForTestCount)
+		f.SetCellValue("Сводная", fmt.Sprintf("D%d", rowNum), stat.BacklogCount)
+	}
+
+	// Автоматическая ширина колонок
+	for i := range headers {
+		colName, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth("Сводная", colName, colName, 25)
+	}
+
+	// Устанавливаем активным лист "Сводная"
+	f.SetActiveSheet(summarySheetIndex)
 }
 
 // formatDateForExcel форматирует дату для Excel
@@ -398,9 +499,19 @@ func formatDateForExcel(dateStr string) string {
 	if dateStr == "" {
 		return ""
 	}
-	t, err := parseDate(dateStr)
+	// Пытаемся распарсить дату в формате "2006-01-02"
+	t, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
-		return dateStr
+		return dateStr // Возвращаем как есть, если не удалось распарсить
 	}
 	return t.Format("02.01.2006")
+}
+
+// extractIDFromHref извлекает ID из ссылки
+func extractIDFromHref(href string) string {
+	parts := strings.Split(href, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
