@@ -94,7 +94,7 @@ func (s *TelegramBotService) SendFile(ctx context.Context, path string) error {
 		}
 
 		msg := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(path))
-		msg.Caption = s.opts.Message
+		msg.Caption = fmt.Sprintf(s.opts.Message, time.Now().Format("2006/01/02"))
 
 		if _, err := s.bot.Send(msg); err != nil {
 			s.logger.Error("failed to send file", "chat_id", chatID, "path", path, "error", err)

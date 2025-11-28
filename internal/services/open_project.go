@@ -308,28 +308,52 @@ func (s *OpenProjectService) classifyTask(task models.WorkPackage, reportDate ti
 		return ""
 	}
 
-	// 1) Все тестовые статусы ("готово к тесту", "на тесте" и т.п.)
-	//    На отчёт попадает только "передано на тесты сегодня"
+	// 1) Передано на тесты сегодня — по полю customField14
+	if s.isSentToTestTodayByField(task, reportDate) {
+		return taskCategorySentToTestToday
+	}
+
+	// 2) Тестовые статусы, но НЕ сегодня передано на тесты — вообще не попадают в отчёт
 	if s.isSentToTestStatus(statusTitle) {
-		if s.isSentToTestToday(task, reportDate) {
-			return taskCategorySentToTestToday // уйдёт на 2-й лист "В работе"
-		}
-		// не сегодня → вообще не попадает ни на один лист
 		return ""
 	}
 
-	// 2) "В процессе" — только на 2-й лист "В работе"
+	// 3) "В процессе" — только на 2-й лист
 	if s.isInProgressStatus(statusTitle) {
 		return taskCategoryInProgress
 	}
 
-	// 3) Статусы, которые нельзя показывать в бэклоге (Разработан, В ветку разработки)
+	// 4) Разработан / В ветку разработки / и т.п. — выкидываем
 	if s.isExcludedFromBacklogStatus(statusTitle) {
 		return ""
 	}
 
-	// 4) Всё остальное — бэклог (1-й лист)
+	// 5) Всё остальное — бэклог (1-й лист)
 	return taskCategoryBacklog
+}
+
+func (s *OpenProjectService) isSentToTestTodayByField(task models.WorkPackage, reportDate time.Time) bool {
+	if task.TestPassedDate == nil {
+		return false
+	}
+
+	dateStr := strings.TrimSpace(*task.TestPassedDate)
+	if dateStr == "" {
+		return false
+	}
+
+	const layout = "2006-01-02"
+	target := reportDate.Format(layout)
+
+	if len(dateStr) >= len(layout) && dateStr[:len(layout)] == target {
+		return true
+	}
+
+	t, err := time.Parse(layout, dateStr)
+	if err != nil {
+		return false
+	}
+	return t.Format(layout) == target
 }
 
 // статусы "в процессе"
@@ -359,6 +383,10 @@ func (s *OpenProjectService) isExcludedFromBacklogStatus(status string) bool {
 	excluded := []string{
 		"разработан",
 		"в ветку разработки",
+		"отклонено",
+		"на тестировании",
+		"тест пройден",
+		"на доработку",
 	}
 	return s.containsStatus(status, excluded)
 }
@@ -369,33 +397,6 @@ func (s *OpenProjectService) containsStatus(status string, statusList []string) 
 		if strings.Contains(lowerStatus, strings.ToLower(v)) {
 			return true
 		}
-	}
-	return false
-}
-
-// "передано на тесты" именно сегодня
-func (s *OpenProjectService) isSentToTestToday(task models.WorkPackage, reportDate time.Time) bool {
-	if task.UpdatedAt == "" {
-		return false
-	}
-	if !s.isSentToTestStatus(task.Links.Status.Title) {
-		return false
-	}
-
-	const layout = "2006-01-02"
-	targetDate := reportDate.Format(layout)
-
-	// пробуем RFC3339
-	if t, err := time.Parse(time.RFC3339, task.UpdatedAt); err == nil {
-		return t.In(reportDate.Location()).Format(layout) == targetDate
-	}
-
-	// fallback по строке
-	if idx := strings.Index(task.UpdatedAt, "T"); idx > 0 {
-		return task.UpdatedAt[:idx] == targetDate
-	}
-	if len(task.UpdatedAt) >= len(layout) {
-		return task.UpdatedAt[:len(layout)] == targetDate
 	}
 	return false
 }
@@ -461,9 +462,19 @@ func (s *OpenProjectService) createExcelFile(
 		}
 	}()
 
+	// ID, Тема, Тип, Статус, Приоритет, Назначенный,
+	// Ответственный, Дата начала, Дата окончания, Проект
 	headers := []string{
-		"ID", "Тема", "Тип", "Статус", "Назначенный",
-		"Ответственный", "Проект", "Дата начала", "Дата окончания",
+		"ID",
+		"Тема",
+		"Тип",
+		"Статус",
+		"Приоритет",
+		"Назначенный",
+		"Ответственный",
+		"Дата начала",
+		"Дата окончания",
+		"Проект",
 	}
 
 	// 1. Лист "Бэклог" – переименовываем дефолтный Sheet1
@@ -475,8 +486,8 @@ func (s *OpenProjectService) createExcelFile(
 		return "", fmt.Errorf("fill backlog sheet: %w", err)
 	}
 
-	// 2. Лист "В работе"
-	const workSheet = "В работе"
+	// 2. Лист "Активные"
+	const workSheet = "Активные"
 	if _, err := f.NewSheet(workSheet); err != nil {
 		return "", fmt.Errorf("create work sheet: %w", err)
 	}
@@ -494,8 +505,13 @@ func (s *OpenProjectService) createExcelFile(
 		return "", fmt.Errorf("create summary sheet: %w", err)
 	}
 
+	// ФИО | В работе | Выполнено | Общее | Бэклог
 	summaryHeaders := []string{
-		"ФИО", "В работе", "Передано на тесты сегодня", "Бэклог",
+		"ФИО",
+		"В работе",
+		"Выполнено",
+		"Общее",
+		"Бэклог",
 	}
 
 	for i, h := range summaryHeaders {
@@ -507,6 +523,7 @@ func (s *OpenProjectService) createExcelFile(
 
 	for row, stat := range employeeStats {
 		rowNum := row + 2
+		total := stat.InProgress + stat.SentToTestToday
 
 		if err := f.SetCellValue(summarySheet, fmt.Sprintf("A%d", rowNum), stat.Name); err != nil {
 			return "", err
@@ -517,7 +534,10 @@ func (s *OpenProjectService) createExcelFile(
 		if err := f.SetCellValue(summarySheet, fmt.Sprintf("C%d", rowNum), stat.SentToTestToday); err != nil {
 			return "", err
 		}
-		if err := f.SetCellValue(summarySheet, fmt.Sprintf("D%d", rowNum), stat.Backlog); err != nil {
+		if err := f.SetCellValue(summarySheet, fmt.Sprintf("D%d", rowNum), total); err != nil {
+			return "", err
+		}
+		if err := f.SetCellValue(summarySheet, fmt.Sprintf("E%d", rowNum), stat.Backlog); err != nil {
 			return "", err
 		}
 	}
@@ -569,37 +589,49 @@ func (s *OpenProjectService) writeTasksSheet(
 			return f.SetCellValue(sheet, col+rowStr, v)
 		}
 
+		// A: ID
 		if err := set("A", task.ID); err != nil {
 			return err
 		}
+		// B: Тема
 		if err := set("B", task.Subject); err != nil {
 			return err
 		}
+		// C: Тип
 		if err := set("C", task.Links.Type.Title); err != nil {
 			return err
 		}
+		// D: Статус
 		if err := set("D", task.Links.Status.Title); err != nil {
 			return err
 		}
-		if err := set("E", task.Links.Assignee.Title); err != nil {
+		// E: Приоритет
+		if err := set("E", task.Links.Priority.Title); err != nil {
 			return err
 		}
-		if err := set("F", task.Links.Responsible.Title); err != nil {
+		// F: Назначенный
+		if err := set("F", task.Links.Assignee.Title); err != nil {
 			return err
 		}
-		if err := set("G", task.Links.Project.Title); err != nil {
+		// G: Ответственный
+		if err := set("G", task.Links.Responsible.Title); err != nil {
 			return err
 		}
-
+		// H: Дата начала
 		if task.StartDate != nil {
 			if err := set("H", formatDateForExcel(*task.StartDate)); err != nil {
 				return err
 			}
 		}
+		// I: Дата окончания
 		if task.DueDate != nil {
 			if err := set("I", formatDateForExcel(*task.DueDate)); err != nil {
 				return err
 			}
+		}
+		// J: Проект
+		if err := set("J", task.Links.Project.Title); err != nil {
+			return err
 		}
 	}
 
