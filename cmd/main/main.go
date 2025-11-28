@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path"
 	"syscall"
+	"time"
 
 	"github.com/DevN0mad/OpenProjectBot/internal/config"
 	"github.com/DevN0mad/OpenProjectBot/internal/core"
@@ -18,7 +21,28 @@ var (
 
 func main() {
 	flag.Parse()
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	opts := &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey:
+				t := a.Value.Time()
+				a.Value = slog.StringValue(t.Local().Format(time.TimeOnly))
+
+			case slog.SourceKey:
+				if src, ok := a.Value.Any().(*slog.Source); ok {
+					a.Value = slog.StringValue(
+						fmt.Sprintf("%s:%d", path.Base(src.File), src.Line),
+					)
+				}
+			}
+			return a
+		},
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

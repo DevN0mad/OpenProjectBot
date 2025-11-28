@@ -11,6 +11,7 @@ import (
 	"github.com/DevN0mad/OpenProjectBot/internal/models"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type BotStorage struct {
@@ -29,7 +30,9 @@ func NewBotStorage(dbPath string, logger *slog.Logger) (*BotStorage, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
 	if err != nil {
 		logger.Error("failed to open sqlite db", "path", dbPath, "error", err)
 		return nil, fmt.Errorf("open sqlite: %w", err)

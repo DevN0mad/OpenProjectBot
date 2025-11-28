@@ -70,7 +70,7 @@ func (a *App) ApplyConfig(cfg config.Config) error {
 		return fmt.Errorf("init daily job: %w", err)
 	}
 
-	adminSrv := server.NewAdminHandler(a.logger, opSrv, &cfg.HttpServer)
+	adminSrv := server.NewAdminHandler(a.logger, opSrv, tg, &cfg.HttpServer)
 
 	go tg.Start(ctx)
 	go dailyJob.Start(ctx)
@@ -86,7 +86,7 @@ func (a *App) ApplyConfig(cfg config.Config) error {
 	a.adminSrv = adminSrv
 	a.servicesCancel = cancel
 
-	a.logger.Info("Services reinitialized from config")
+	a.logger.Info("Services reinitialized successfully with configuration")
 	return nil
 }
 

@@ -9,8 +9,8 @@ import (
 
 // DailyJobOpts параметры необходимые для работы сервиса.
 type DailyJobOpts struct {
-	Hour   int `mapstructure:"hour" validate:"required,min=0,max=23"`
-	Minute int `mapstructure:"minute" validate:"required,min=0,max=59"`
+	Hour   int `mapstructure:"hour" validate:"min=0,max=23"`
+	Minute int `mapstructure:"minute" validate:"min=0,max=59"`
 }
 
 // DailyJobService отправляет файл каждый день в заданное время.
@@ -61,7 +61,7 @@ func NewDailyJobService(
 func (d *DailyJobService) Start(ctx context.Context) {
 	nextRun := d.nextRunTime()
 	timer := time.NewTimer(time.Until(nextRun))
-	d.logger.Info("Next run scheduled", "at", nextRun.Format(time.RFC3339))
+	d.logger.Info("Next run scheduled", "at", nextRun.Format(time.DateTime))
 
 	for {
 		select {
@@ -70,7 +70,7 @@ func (d *DailyJobService) Start(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			filePath, err := d.projSrv.GenerateExcelReport()
+			filePath, err := d.projSrv.GenerateExcelReport(ctx)
 			if err != nil {
 				d.logger.Error("Generate report", "error", err)
 				continue
@@ -83,7 +83,7 @@ func (d *DailyJobService) Start(ctx context.Context) {
 
 			nextRun = d.nextRunTime()
 			timer.Reset(time.Until(nextRun))
-			d.logger.Info("Next run scheduled", "at", nextRun.Format(time.RFC3339))
+			d.logger.Info("Next run scheduled", "at", nextRun.Format(time.DateTime))
 		}
 	}
 }

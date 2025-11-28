@@ -28,21 +28,51 @@ type AdminServer struct {
 	opts   *AdminServerOpts
 	srv    *http.Server
 	opSrv  *services.OpenProjectService
+	bot    *services.TelegramBotService
 }
 
 // NewAdminHandler создаёт новый обработчик для административных команд.
-func NewAdminHandler(logger *slog.Logger, opSrv *services.OpenProjectService, opts *AdminServerOpts) *AdminServer {
+func NewAdminHandler(
+	logger *slog.Logger,
+	opSrv *services.OpenProjectService,
+	bot *services.TelegramBotService,
+	opts *AdminServerOpts) *AdminServer {
 	return &AdminServer{
 		logger: logger,
 		opts:   opts,
 		opSrv:  opSrv,
+		bot:    bot,
 	}
 }
 
 // Register регистрирует маршруты административного сервера.
 func (h *AdminServer) Register(mux *http.ServeMux) {
 	mux.HandleFunc(withPrefix("report"), h.handleReport)
+	mux.HandleFunc(withPrefix("report/send"), h.handleSendReport)
 
+}
+
+// handleSendReport обрабатывает запросы на отправку отчёта.
+func (h *AdminServer) handleSendReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.logger.Warn("method_not_allowed", "method", r.Method)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	reportPath, err := h.opSrv.GenerateExcelReport(r.Context())
+	if err != nil {
+		h.logger.Error("generate_report", "err", err)
+		http.Error(w, "Failed to generate report", http.StatusInternalServerError)
+		return
+	}
+	if err = h.bot.SendFile(r.Context(), reportPath); err != nil {
+		h.logger.Error("send_report", "err", err)
+		http.Error(w, "Failed to send report", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Report sent successfully"))
 }
 
 // handleReport обрабатывает запросы на получение отчёта.
@@ -53,7 +83,7 @@ func (h *AdminServer) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportPath, err := h.opSrv.GenerateExcelReport()
+	reportPath, err := h.opSrv.GenerateExcelReport(r.Context())
 	if err != nil {
 		h.logger.Error("generate_report", "err", err)
 		http.Error(w, "Failed to generate report", http.StatusInternalServerError)

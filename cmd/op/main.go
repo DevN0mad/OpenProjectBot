@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/DevN0mad/OpenProjectBot/internal/services"
 	"log/slog"
 	"os"
@@ -33,7 +34,7 @@ func main() {
 	logger.Info("Testing Basic Auth with API token")
 
 	// Генерируем Excel отчет
-	resPath, err := opService.GenerateExcelReport()
+	resPath, err := opService.GenerateExcelReport(context.Background())
 	if err != nil {
 		logger.Error("Failed to generate report", "error", err)
 		return
