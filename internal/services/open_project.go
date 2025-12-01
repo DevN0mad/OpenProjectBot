@@ -303,6 +303,11 @@ func (s *OpenProjectService) resolveURL(href string) string {
 // ===================== Классификация задач =====================
 
 func (s *OpenProjectService) classifyTask(task models.WorkPackage, reportDate time.Time) string {
+	// сначала фильтр по типу
+	if !s.isAllowedType(task) {
+		return ""
+	}
+
 	statusTitle := task.Links.Status.Title
 	if statusTitle == "" {
 		return ""
@@ -399,6 +404,17 @@ func (s *OpenProjectService) containsStatus(status string, statusList []string) 
 		}
 	}
 	return false
+}
+
+func (s *OpenProjectService) isAllowedType(task models.WorkPackage) bool {
+	t := strings.ToLower(strings.TrimSpace(task.Links.Type.Title))
+
+	switch t {
+	case "задание", "ошибка", "функция":
+		return true
+	default:
+		return false
+	}
 }
 
 // ===================== Сводная статистика =====================
